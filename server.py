@@ -89,7 +89,7 @@ def enrich_gate_tier(tier, mark_price, multiplier):
         "tier": tier.get("tier"),
         "risk_limit_contracts": size,
         "risk_limit_usdt": approx_usdt_from_size(size, mark_price, multiplier),
-        "leverage_max": integer_leverage(tier.get("leverage_max")),
+        "leverage_max": format_number(tier.get("leverage_max"), 4),
         "initial_rate": format_percent(tier.get("initial_rate")),
         "maintenance_rate": format_percent(tier.get("maintenance_rate")),
         "source_risk_limit_usdt": format_number(tier.get("risk_limit"), 4),
@@ -105,6 +105,7 @@ def simplify_tiers(tiers):
         group = tiers[index : index + 2]
         chosen = group[-1].copy()
         chosen["tier"] = len(simplified) + 1
+        chosen["leverage_max"] = integer_leverage(chosen.get("leverage_max"))
         chosen["source_tiers"] = "-".join(str(item["tier"]) for item in group)
         simplified.append(chosen)
     return simplified
