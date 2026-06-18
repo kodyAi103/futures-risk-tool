@@ -12,6 +12,7 @@ import time
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8765"))
 GATE_API = "https://api.gateio.ws/api/v4"
+BITGET_API = "https://api.bitget.com/api/v2"
 CACHE_TTL = 60
 BASE_DIR = Path(__file__).resolve().parent
 cache = {}
@@ -82,7 +83,7 @@ def integer_leverage(value):
     return math.floor(leverage)
 
 
-def enrich_tier(tier, mark_price, multiplier):
+def enrich_gate_tier(tier, mark_price, multiplier):
     size = contract_size_from_limit(tier.get("risk_limit"), mark_price, multiplier)
     return {
         "tier": tier.get("tier"),
@@ -109,13 +110,18 @@ def simplify_tiers(tiers):
     return simplified
 
 
-def contract_intro(contract):
-    base = contract["name"].split("_")[0]
+def contract_intro(base):
     overviews = load_coin_overviews()
     return overviews.get(base) or "暂无币种概况。"
 
 
-def get_contracts():
+def unwrap_bitget(response):
+    if response.get("code") != "00000":
+        raise ValueError(response.get("msg") or "Bitget API request failed")
+    return response.get("data") or []
+
+
+def get_gate_contracts():
     contracts = fetch_json(f"{GATE_API}/futures/usdt/contracts")
     result = []
     for item in contracts:
@@ -133,16 +139,45 @@ def get_contracts():
     return sorted(result, key=lambda row: row["name"] or "")
 
 
-def get_contract_detail(name):
+def get_bitget_contracts():
+    contracts = unwrap_bitget(fetch_json(f"{BITGET_API}/mix/market/contracts?productType=usdt-futures"))
+    tickers = unwrap_bitget(fetch_json(f"{BITGET_API}/mix/market/tickers?productType=usdt-futures"))
+    ticker_by_symbol = {item.get("symbol"): item for item in tickers}
+    result = []
+    for item in contracts:
+        status = item.get("symbolStatus", "")
+        if status in ("normal", "maintain", "restrictedAPI") or not status:
+            ticker = ticker_by_symbol.get(item.get("symbol"), {})
+            result.append(
+                {
+                    "name": item.get("symbol"),
+                    "status": status,
+                    "mark_price": ticker.get("markPrice"),
+                    "leverage_max": item.get("maxLever"),
+                    "contract_type": item.get("symbolType"),
+                }
+            )
+    return sorted(result, key=lambda row: row["name"] or "")
+
+
+def get_contracts(exchange):
+    if exchange == "gate":
+        return get_gate_contracts()
+    if exchange == "bitget":
+        return get_bitget_contracts()
+    raise ValueError("unsupported exchange")
+
+
+def get_gate_contract_detail(name):
     contract = fetch_json(f"{GATE_API}/futures/usdt/contracts/{name}", ttl=0)
     tiers = fetch_json(f"{GATE_API}/futures/usdt/risk_limit_tiers?contract={name}", ttl=0)
     mark_price = as_float(contract.get("mark_price") or contract.get("index_price"))
     multiplier = as_float(contract.get("quanto_multiplier"), 1)
-    enriched = [enrich_tier(tier, mark_price, multiplier) for tier in tiers]
+    enriched = [enrich_gate_tier(tier, mark_price, multiplier) for tier in tiers]
 
     return {
         "exchange": "gate.io",
-        "intro": contract_intro(contract),
+        "intro": contract_intro(name.split("_")[0]),
         "updated_at": int(time.time()),
         "contract": {
             "name": contract.get("name"),
@@ -161,6 +196,81 @@ def get_contract_detail(name):
         "tiers": enriched,
         "simplified_tiers": simplify_tiers(enriched),
     }
+
+
+def bitget_price_step(contract):
+    places = int(as_float(contract.get("pricePlace"), 0))
+    if places <= 0:
+        return "1"
+    return "0." + ("0" * (places - 1)) + "1"
+
+
+def enrich_bitget_tier(tier, mark_price, multiplier):
+    risk_limit = tier.get("endUnit")
+    size = contract_size_from_limit(risk_limit, mark_price, multiplier)
+    leverage = as_float(tier.get("leverage"))
+    initial_rate = 1 / leverage if leverage > 0 else 0
+    return {
+        "tier": int(as_float(tier.get("level"))),
+        "risk_limit_contracts": size,
+        "risk_limit_usdt": approx_usdt_from_size(size, mark_price, multiplier),
+        "leverage_max": integer_leverage(tier.get("leverage")),
+        "initial_rate": round(initial_rate * 100, 4),
+        "maintenance_rate": format_percent(tier.get("keepMarginRate")),
+        "source_risk_limit_usdt": format_number(risk_limit, 4),
+    }
+
+
+def get_bitget_contract_detail(name):
+    contract_data = unwrap_bitget(
+        fetch_json(f"{BITGET_API}/mix/market/contracts?productType=usdt-futures&symbol={name}", ttl=0)
+    )
+    price_data = unwrap_bitget(
+        fetch_json(f"{BITGET_API}/mix/market/symbol-price?productType=usdt-futures&symbol={name}", ttl=0)
+    )
+    tier_data = unwrap_bitget(
+        fetch_json(f"{BITGET_API}/mix/market/query-position-lever?productType=usdt-futures&symbol={name}", ttl=0)
+    )
+    if not contract_data:
+        raise ValueError(f"contract not found: {name}")
+
+    contract = contract_data[0]
+    price = price_data[0] if price_data else {}
+    mark_price = as_float(price.get("markPrice") or price.get("price"))
+    multiplier = as_float(contract.get("sizeMultiplier"), 1)
+    enriched = [enrich_bitget_tier(tier, mark_price, multiplier) for tier in tier_data]
+    risk_limits = [as_float(tier.get("source_risk_limit_usdt")) for tier in enriched]
+    first_tier = enriched[0] if enriched else {}
+
+    return {
+        "exchange": "bitget.com",
+        "intro": contract_intro(contract.get("baseCoin") or name.replace("USDT", "")),
+        "updated_at": int(time.time()),
+        "contract": {
+            "name": contract.get("symbol"),
+            "status": contract.get("symbolStatus"),
+            "leverage_min": contract.get("minLever"),
+            "leverage_max": contract.get("maxLever"),
+            "cross_leverage_default": "-",
+            "maintenance_rate": first_tier.get("maintenance_rate", "-"),
+            "risk_limit_base": first_tier.get("source_risk_limit_usdt", "-"),
+            "risk_limit_max": max(risk_limits) if risk_limits else "-",
+            "quanto_multiplier": contract.get("sizeMultiplier"),
+            "order_price_round": bitget_price_step(contract),
+            "mark_price": price.get("markPrice"),
+            "index_price": price.get("indexPrice"),
+        },
+        "tiers": enriched,
+        "simplified_tiers": simplify_tiers(enriched),
+    }
+
+
+def get_contract_detail(exchange, name):
+    if exchange == "gate":
+        return get_gate_contract_detail(name)
+    if exchange == "bitget":
+        return get_bitget_contract_detail(name)
+    raise ValueError("unsupported exchange")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -187,15 +297,18 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path in ("/", "/index.html"):
                 self.send_html()
             elif parsed.path == "/api/exchanges":
-                self.send_json([{"id": "gate", "name": "gate.io"}])
+                self.send_json([{"id": "gate", "name": "gate.io"}, {"id": "bitget", "name": "bitget.com"}])
             elif parsed.path == "/api/contracts":
-                self.send_json(get_contracts())
+                exchange = parse_qs(parsed.query).get("exchange", ["gate"])[0].strip().lower()
+                self.send_json(get_contracts(exchange))
             elif parsed.path == "/api/contract":
-                name = parse_qs(parsed.query).get("name", [""])[0].strip().upper()
+                query = parse_qs(parsed.query)
+                exchange = query.get("exchange", ["gate"])[0].strip().lower()
+                name = query.get("name", [""])[0].strip().upper()
                 if not name:
                     self.send_json({"error": "missing contract name"}, 400)
                     return
-                self.send_json(get_contract_detail(name))
+                self.send_json(get_contract_detail(exchange, name))
             else:
                 self.send_json({"error": "not found"}, 404)
         except HTTPError as exc:

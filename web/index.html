@@ -347,10 +347,15 @@
       const content = document.querySelector("#content");
 
       let contracts = [];
+      let currentExchange = "gate";
       let selectedContract = "ACN_USDT";
       let refreshTimer = null;
       let requestSeq = 0;
       const refreshIntervalMs = 5000;
+      const defaultContracts = {
+        gate: "ACN_USDT",
+        bitget: "KIOXIAUSDT",
+      };
 
       const nf = new Intl.NumberFormat("zh-CN");
       const pf = new Intl.NumberFormat("zh-CN", {
@@ -378,7 +383,7 @@
 
       function renderContracts() {
         const q = searchInput.value.trim().toUpperCase();
-        const filtered = contracts.filter((item) => item.name.includes(q)).slice(0, 250);
+        const filtered = contracts.filter((item) => item.name.includes(q));
 
         contractList.innerHTML = filtered
           .map(
@@ -489,16 +494,19 @@
 
       async function refreshDetail(name, showLoading = false) {
         const seq = ++requestSeq;
+        const exchange = currentExchange;
         if (showLoading) {
           content.className = "loading";
           content.textContent = "正在加载参数";
         }
         try {
-          const data = await loadJson(`/api/contract?name=${encodeURIComponent(name)}&t=${Date.now()}`);
-          if (seq !== requestSeq || name !== selectedContract) return;
+          const data = await loadJson(
+            `/api/contract?exchange=${encodeURIComponent(exchange)}&name=${encodeURIComponent(name)}&t=${Date.now()}`,
+          );
+          if (seq !== requestSeq || name !== selectedContract || exchange !== currentExchange) return;
           renderDetail(data);
         } catch (error) {
-          if (seq !== requestSeq || name !== selectedContract) return;
+          if (seq !== requestSeq || name !== selectedContract || exchange !== currentExchange) return;
           content.className = "error";
           content.textContent = error.message;
         }
@@ -518,14 +526,25 @@
         startRealtimeRefresh();
       }
 
+      async function loadContractsForExchange(exchange) {
+        currentExchange = exchange;
+        selectedContract = defaultContracts[exchange] || "";
+        requestSeq++;
+        if (refreshTimer) clearInterval(refreshTimer);
+        content.className = "loading";
+        content.textContent = "正在加载合约列表";
+        contracts = await loadJson(`/api/contracts?exchange=${encodeURIComponent(exchange)}`);
+        renderContracts();
+        const exists = contracts.some((item) => item.name === selectedContract);
+        await selectContract(exists ? selectedContract : contracts[0]?.name);
+      }
+
       async function init() {
         try {
           const exchanges = await loadJson("/api/exchanges");
           exchangeSelect.innerHTML = exchanges.map((item) => `<option value="${item.id}">${item.name}</option>`).join("");
-          contracts = await loadJson("/api/contracts");
-          renderContracts();
-          const exists = contracts.some((item) => item.name === selectedContract);
-          await selectContract(exists ? selectedContract : contracts[0]?.name);
+          exchangeSelect.value = currentExchange;
+          await loadContractsForExchange(currentExchange);
         } catch (error) {
           content.className = "error";
           content.textContent = error.message;
@@ -535,6 +554,13 @@
       searchInput.addEventListener("input", renderContracts);
       contractList.addEventListener("change", (event) => {
         if (event.target.name === "contract") selectContract(event.target.value);
+      });
+      exchangeSelect.addEventListener("change", () => {
+        searchInput.value = "";
+        loadContractsForExchange(exchangeSelect.value).catch((error) => {
+          content.className = "error";
+          content.textContent = error.message;
+        });
       });
 
       init();
