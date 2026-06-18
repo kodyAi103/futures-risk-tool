@@ -83,6 +83,9 @@ def integer_leverage(value):
     return math.floor(leverage)
 
 
+PREFERRED_SIMPLIFIED_LEVERAGES = [200, 150, 125, 100, 75, 50, 25, 18, 12, 8, 6, 4, 2, 1]
+
+
 def enrich_gate_tier(tier, mark_price, multiplier):
     size = contract_size_from_limit(tier.get("risk_limit"), mark_price, multiplier)
     return {
@@ -97,18 +100,57 @@ def enrich_gate_tier(tier, mark_price, multiplier):
 
 
 def simplify_tiers(tiers):
-    if len(tiers) <= 10:
-        return tiers
+    if not tiers:
+        return []
 
-    simplified = []
-    for index in range(0, len(tiers), 2):
-        group = tiers[index : index + 2]
-        chosen = group[-1].copy()
-        chosen["tier"] = len(simplified) + 1
-        chosen["leverage_max"] = integer_leverage(chosen.get("leverage_max"))
-        chosen["source_tiers"] = "-".join(str(item["tier"]) for item in group)
-        simplified.append(chosen)
-    return simplified
+    def simplified_row(tier, new_tier):
+        chosen = tier.copy()
+        leverage = integer_leverage(chosen.get("leverage_max"))
+        chosen["tier"] = new_tier
+        chosen["leverage_max"] = leverage
+        chosen["initial_rate"] = round(100 / leverage, 4)
+        chosen["source_tiers"] = str(tier["tier"])
+        return chosen
+
+    if len(tiers) <= 10:
+        return [simplified_row(tier, index + 1) for index, tier in enumerate(tiers)]
+
+    tier_leverages = [integer_leverage(tier.get("leverage_max")) for tier in tiers]
+    max_leverage = max(tier_leverages)
+    min_leverage = min(tier_leverages)
+    targets = [max_leverage]
+    targets.extend(
+        leverage
+        for leverage in PREFERRED_SIMPLIFIED_LEVERAGES
+        if min_leverage <= leverage <= max_leverage and leverage != max_leverage
+    )
+    if min_leverage not in targets:
+        targets.append(min_leverage)
+
+    targets = list(dict.fromkeys(targets))
+    if len(targets) > 8:
+        last_index = len(targets) - 1
+        targets = [targets[round(index * last_index / 7)] for index in range(8)]
+        targets = list(dict.fromkeys(targets))
+
+    selected_indexes = []
+    for target in targets:
+        if target == targets[-1]:
+            index = len(tiers) - 1
+        else:
+            index = next(
+                (
+                    candidate
+                    for candidate, leverage in enumerate(tier_leverages)
+                    if candidate not in selected_indexes and leverage <= target
+                ),
+                len(tiers) - 1,
+            )
+        if index not in selected_indexes:
+            selected_indexes.append(index)
+
+    selected_indexes.sort()
+    return [simplified_row(tiers[index], position + 1) for position, index in enumerate(selected_indexes)]
 
 
 def contract_intro(base):
