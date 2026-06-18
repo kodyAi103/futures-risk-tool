@@ -1,0 +1,16 @@
+[Unit]
+Description=Futures Risk Tool
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/apps/futures-risk-tool
+ExecStart=/usr/bin/python3 /opt/apps/futures-risk-tool/server.py
+Restart=always
+RestartSec=3
+User=YOUR_SERVER_USER
+Environment=HOST=0.0.0.0
+Environment=PORT=8765
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>合约杠杆与保证金参数</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fb;
+        --panel: #ffffff;
+        --line: #d9dee8;
+        --text: #162033;
+        --muted: #647084;
+        --accent: #0b7a75;
+        --accent-soft: #e8f4f2;
+        --warn: #9b5f00;
+        --shadow: 0 10px 24px rgba(21, 32, 51, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: 320px minmax(0, 1fr);
+        min-height: 100vh;
+      }
+
+      aside {
+        border-right: 1px solid var(--line);
+        background: #eef2f6;
+        padding: 22px;
+        overflow: auto;
+      }
+
+      main {
+        padding: 24px;
+        overflow: auto;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 22px;
+        line-height: 1.25;
+        margin-bottom: 20px;
+      }
+
+      h2 {
+        font-size: 17px;
+        margin-bottom: 14px;
+      }
+
+      h3 {
+        font-size: 14px;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+
+      label {
+        display: block;
+        font-size: 13px;
+        font-weight: 700;
+        color: #2a3548;
+        margin-bottom: 8px;
+      }
+
+      select,
+      input {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--text);
+        border-radius: 8px;
+        min-height: 40px;
+        padding: 0 12px;
+        font-size: 14px;
+      }
+
+      .field {
+        margin-bottom: 18px;
+      }
+
+      .contract-list {
+        display: grid;
+        gap: 8px;
+        max-height: calc(100vh - 230px);
+        overflow: auto;
+        padding-right: 4px;
+      }
+
+      .contract-option {
+        display: grid;
+        grid-template-columns: 18px 1fr;
+        gap: 9px;
+        align-items: start;
+        padding: 10px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.62);
+        cursor: pointer;
+      }
+
+      .contract-option:has(input:checked) {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+      }
+
+      .contract-option input {
+        width: 16px;
+        height: 16px;
+        min-height: 0;
+        margin: 2px 0 0;
+      }
+
+      .name {
+        font-size: 14px;
+        font-weight: 800;
+      }
+
+      .meta {
+        margin-top: 3px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+
+      .title-block {
+        display: grid;
+        gap: 5px;
+      }
+
+      .title {
+        font-size: 24px;
+        font-weight: 850;
+      }
+
+      .subtitle {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .refresh-line {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .status {
+        border-radius: 999px;
+        background: #e8f4f2;
+        color: #075e59;
+        padding: 8px 12px;
+        font-size: 13px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        box-shadow: var(--shadow);
+        padding: 18px;
+        margin-bottom: 18px;
+      }
+
+      .intro {
+        color: #2a3548;
+        line-height: 1.7;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .metric {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        min-height: 76px;
+        background: #fbfcfe;
+      }
+
+      .metric span {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+
+      .metric strong {
+        display: block;
+        font-size: 17px;
+        overflow-wrap: anywhere;
+      }
+
+      .table-wrap {
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 760px;
+        background: #fff;
+      }
+
+      th,
+      td {
+        padding: 11px 12px;
+        border-bottom: 1px solid var(--line);
+        text-align: right;
+        font-size: 13px;
+        white-space: nowrap;
+      }
+
+      th {
+        background: #f0f3f7;
+        color: #3a4658;
+        font-weight: 800;
+      }
+
+      th:first-child,
+      td:first-child {
+        text-align: left;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .empty,
+      .loading,
+      .error {
+        display: grid;
+        place-items: center;
+        min-height: 220px;
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+        color: var(--muted);
+        background: #fff;
+      }
+
+      .error {
+        color: #9b1c1c;
+        background: #fff5f5;
+      }
+
+      .badge {
+        color: var(--warn);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      @media (max-width: 980px) {
+        .shell {
+          grid-template-columns: 1fr;
+        }
+
+        aside {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .contract-list {
+          max-height: 320px;
+        }
+
+        .grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 560px) {
+        main,
+        aside {
+          padding: 16px;
+        }
+
+        .topbar {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .title {
+          font-size: 20px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside>
+        <h1>合约杠杆与保证金参数</h1>
+        <div class="field">
+          <label for="exchange">交易所</label>
+          <select id="exchange"></select>
+        </div>
+        <div class="field">
+          <label for="search">合约交易对</label>
+          <input id="search" type="search" placeholder="搜索，例如 ACN_USDT" />
+        </div>
+        <div id="contractList" class="contract-list"></div>
+      </aside>
+
+      <main>
+        <div id="content" class="empty">请选择合约交易对</div>
+      </main>
+    </div>
+
+    <script>
+      const exchangeSelect = document.querySelector("#exchange");
+      const searchInput = document.querySelector("#search");
+      const contractList = document.querySelector("#contractList");
+      const content = document.querySelector("#content");
+
+      let contracts = [];
+      let selectedContract = "ACN_USDT";
+      let refreshTimer = null;
+      let requestSeq = 0;
+      const refreshIntervalMs = 5000;
+
+      const nf = new Intl.NumberFormat("zh-CN");
+      const pf = new Intl.NumberFormat("zh-CN", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 4,
+      });
+
+      function valueText(value, suffix = "") {
+        if (value === null || value === undefined || value === "") return "-";
+        return `${value}${suffix}`;
+      }
+
+      function numberText(value, digits = 4) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return valueText(value);
+        return nf.format(Number(number.toFixed(digits)));
+      }
+
+      async function loadJson(url) {
+        const response = await fetch(url);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "请求失败");
+        return data;
+      }
+
+      function renderContracts() {
+        const q = searchInput.value.trim().toUpperCase();
+        const filtered = contracts.filter((item) => item.name.includes(q)).slice(0, 250);
+
+        contractList.innerHTML = filtered
+          .map(
+            (item) => `
+              <label class="contract-option">
+                <input type="radio" name="contract" value="${item.name}" ${item.name === selectedContract ? "checked" : ""} />
+                <span>
+                  <span class="name">${item.name}</span>
+                  <span class="meta">${item.status || "-"} · ${valueText(item.leverage_max, "x")} · ${valueText(item.mark_price)}</span>
+                </span>
+              </label>
+            `,
+          )
+          .join("");
+      }
+
+      function metric(label, value) {
+        return `<div class="metric"><span>${label}</span><strong>${valueText(value)}</strong></div>`;
+      }
+
+      function renderTierRows(tiers, showSource) {
+        return tiers
+          .map(
+            (tier) => `
+              <tr>
+                <td>${tier.tier}${showSource && tier.source_tiers ? ` <span class="badge">原 ${tier.source_tiers}</span>` : ""}</td>
+                <td>${numberText(tier.risk_limit_contracts, 0)}</td>
+                <td>${numberText(tier.risk_limit_usdt, 2)}</td>
+                <td>${tier.leverage_max}x</td>
+                <td>${pf.format(tier.initial_rate)}%</td>
+                <td>${pf.format(tier.maintenance_rate)}%</td>
+              </tr>
+            `,
+          )
+          .join("");
+      }
+
+      function table(tiers, showSource = false) {
+        return `
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>档位</th>
+                  <th>风险限额 张</th>
+                  <th>约等值 USDT</th>
+                  <th>最大杠杆</th>
+                  <th>初始保证金率</th>
+                  <th>维持保证金率</th>
+                </tr>
+              </thead>
+              <tbody>${renderTierRows(tiers, showSource)}</tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      function updatedAtText(timestamp) {
+        if (!timestamp) return "-";
+        return new Date(timestamp * 1000).toLocaleTimeString("zh-CN", { hour12: false });
+      }
+
+      function renderDetail(data) {
+        const c = data.contract;
+        content.className = "";
+        content.innerHTML = `
+          <div class="topbar">
+            <div class="title-block">
+              <div class="title">${c.name}</div>
+              <div class="subtitle">${data.exchange} · 标记价格 ${valueText(c.mark_price)} · 指数价格 ${valueText(c.index_price)}</div>
+              <div class="refresh-line">实时更新 · 最近同步 ${updatedAtText(data.updated_at)} · 每 ${refreshIntervalMs / 1000} 秒刷新</div>
+            </div>
+            <div class="status">${valueText(c.status)}</div>
+          </div>
+
+          <section class="panel">
+            <h2>合约交易对介绍</h2>
+            <p class="intro">${data.intro}</p>
+          </section>
+
+          <section class="panel">
+            <h2>合约基础参数</h2>
+            <div class="grid">
+              ${metric("合约", c.name)}
+              ${metric("状态", c.status)}
+              ${metric("最小杠杆", valueText(c.leverage_min, "x"))}
+              ${metric("最大杠杆", valueText(c.leverage_max, "x"))}
+              ${metric("默认全仓杠杆", valueText(c.cross_leverage_default, "x"))}
+              ${metric("基础维持保证金率", valueText(c.maintenance_rate, "%"))}
+              ${metric("风险限额基础值", numberText(c.risk_limit_base))}
+              ${metric("最大风险限额", numberText(c.risk_limit_max))}
+              ${metric("合约乘数", c.quanto_multiplier)}
+              ${metric("价格精度", c.order_price_round)}
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>风险限额 / 杠杆 / 保证金梯度</h2>
+            ${table(data.tiers)}
+          </section>
+
+          <section class="panel">
+            <h2>风险限额 / 杠杆 / 保证金梯度（精简）</h2>
+            ${table(data.simplified_tiers, true)}
+          </section>
+        `;
+      }
+
+      async function refreshDetail(name, showLoading = false) {
+        const seq = ++requestSeq;
+        if (showLoading) {
+          content.className = "loading";
+          content.textContent = "正在加载参数";
+        }
+        try {
+          const data = await loadJson(`/api/contract?name=${encodeURIComponent(name)}&t=${Date.now()}`);
+          if (seq !== requestSeq || name !== selectedContract) return;
+          renderDetail(data);
+        } catch (error) {
+          if (seq !== requestSeq || name !== selectedContract) return;
+          content.className = "error";
+          content.textContent = error.message;
+        }
+      }
+
+      function startRealtimeRefresh() {
+        if (refreshTimer) clearInterval(refreshTimer);
+        refreshTimer = setInterval(() => {
+          if (selectedContract) refreshDetail(selectedContract, false);
+        }, refreshIntervalMs);
+      }
+
+      async function selectContract(name) {
+        selectedContract = name;
+        renderContracts();
+        await refreshDetail(name, true);
+        startRealtimeRefresh();
+      }
+
+      async function init() {
+        try {
+          const exchanges = await loadJson("/api/exchanges");
+          exchangeSelect.innerHTML = exchanges.map((item) => `<option value="${item.id}">${item.name}</option>`).join("");
+          contracts = await loadJson("/api/contracts");
+          renderContracts();
+          const exists = contracts.some((item) => item.name === selectedContract);
+          await selectContract(exists ? selectedContract : contracts[0]?.name);
+        } catch (error) {
+          content.className = "error";
+          content.textContent = error.message;
+        }
+      }
+
+      searchInput.addEventListener("input", renderContracts);
+      contractList.addEventListener("change", (event) => {
+        if (event.target.name === "contract") selectContract(event.target.value);
+      });
+
+      init();
+    </script>
+  </body>
+</html>
