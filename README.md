@@ -1,6 +1,6 @@
 # 合约杠杆与保证金参数工具
 
-本地服务端页面，用于查询 Gate USDT 永续合约的基础参数、风险限额梯度，并在档位超过 10 档时按相邻两档合并为一档进行精简。
+本地服务端页面，用于查询多家交易所 USDT 永续合约的基础参数、风险限额梯度，并按统一的安全规则精简档位。
 
 ## 启动
 
@@ -28,7 +28,7 @@ http://服务器IP:8765
 
 ## 当前功能
 
-- 交易所选择：当前支持 `gate.io`、`bitget.com`
+- 交易所选择：当前支持 `gate.io`、`bitget.com`、`bybit.com`、`okx.com`、`mexc.com`、`binance.com`
 - 合约交易对列表：拉取对应交易所当前 USDT 永续合约
 - 合约搜索和单选
 - 合约交易对介绍
@@ -41,6 +41,10 @@ http://服务器IP:8765
 
 - `gate.io`：`ACN_USDT`
 - `bitget.com`：`KIOXIAUSDT`
+- `bybit.com`：`BTCUSDT`
+- `okx.com`：`BTC-USDT-SWAP`
+- `mexc.com`：`BTC_USDT`
+- `binance.com`：`BTCUSDT`
 
 ## 合约交易对介绍
 

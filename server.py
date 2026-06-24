@@ -1,7 +1,7 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 import json
 import math
@@ -13,6 +13,11 @@ HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8765"))
 GATE_API = "https://api.gateio.ws/api/v4"
 BITGET_API = "https://api.bitget.com/api/v2"
+BYBIT_API = "https://api.bybit.com/v5"
+OKX_API = "https://www.okx.com/api/v5"
+MEXC_API = "https://contract.mexc.com/api/v1"
+BINANCE_API = "https://fapi.binance.com"
+BINANCE_WEB_API = "https://www.binance.com/bapi/futures/v1/public/future/common"
 CACHE_TTL = 60
 BASE_DIR = Path(__file__).resolve().parent
 cache = {}
@@ -164,6 +169,42 @@ def unwrap_bitget(response):
     return response.get("data") or []
 
 
+def unwrap_bybit(response):
+    if response.get("retCode") != 0:
+        raise ValueError(response.get("retMsg") or "Bybit API request failed")
+    return response.get("result") or {}
+
+
+def unwrap_okx(response):
+    if response.get("code") != "0":
+        raise ValueError(response.get("msg") or "OKX API request failed")
+    return response.get("data") or []
+
+
+def unwrap_mexc(response):
+    if not response.get("success"):
+        raise ValueError(response.get("message") or "MEXC API request failed")
+    return response.get("data")
+
+
+def make_notional_tier(tier, risk_limit, mark_price, multiplier, leverage, initial_rate, maintenance_rate):
+    size = contract_size_from_limit(risk_limit, mark_price, multiplier)
+    return {
+        "tier": int(as_float(tier)),
+        "risk_limit_contracts": size,
+        "risk_limit_usdt": approx_usdt_from_size(size, mark_price, multiplier),
+        "leverage_max": format_number(leverage, 4),
+        "initial_rate": format_percent(initial_rate),
+        "maintenance_rate": format_percent(maintenance_rate),
+        "source_risk_limit_usdt": format_number(risk_limit, 4),
+    }
+
+
+def price_filter_value(contract, filter_type, key):
+    item = next((row for row in contract.get("filters", []) if row.get("filterType") == filter_type), {})
+    return item.get(key, "-")
+
+
 def get_gate_contracts():
     contracts = fetch_json(f"{GATE_API}/futures/usdt/contracts")
     result = []
@@ -203,11 +244,93 @@ def get_bitget_contracts():
     return sorted(result, key=lambda row: row["name"] or "")
 
 
+def get_bybit_contracts():
+    result = []
+    cursor = ""
+    while True:
+        params = {"category": "linear", "limit": 1000}
+        if cursor:
+            params["cursor"] = cursor
+        page = unwrap_bybit(fetch_json(f"{BYBIT_API}/market/instruments-info?{urlencode(params)}"))
+        for item in page.get("list", []):
+            if item.get("settleCoin") != "USDT" or item.get("contractType") != "LinearPerpetual":
+                continue
+            leverage = item.get("leverageFilter", {})
+            result.append({
+                "name": item.get("symbol"),
+                "status": item.get("status"),
+                "mark_price": "-",
+                "leverage_max": leverage.get("maxLeverage"),
+                "contract_type": item.get("contractType"),
+            })
+        cursor = page.get("nextPageCursor") or ""
+        if not cursor:
+            break
+    return sorted(result, key=lambda row: row["name"] or "")
+
+
+def get_okx_contracts():
+    instruments = unwrap_okx(fetch_json(f"{OKX_API}/public/instruments?instType=SWAP"))
+    tickers = unwrap_okx(fetch_json(f"{OKX_API}/market/tickers?instType=SWAP"))
+    ticker_by_name = {item.get("instId"): item for item in tickers}
+    result = []
+    for item in instruments:
+        if item.get("settleCcy") != "USDT" or item.get("ctType") != "linear":
+            continue
+        ticker = ticker_by_name.get(item.get("instId"), {})
+        result.append({
+            "name": item.get("instId"),
+            "status": item.get("state"),
+            "mark_price": ticker.get("last"),
+            "leverage_max": item.get("lever"),
+            "contract_type": item.get("instType"),
+        })
+    return sorted(result, key=lambda row: row["name"] or "")
+
+
+def get_mexc_contracts():
+    contracts = unwrap_mexc(fetch_json(f"{MEXC_API}/contract/detail")) or []
+    return sorted([
+        {
+            "name": item.get("symbol"),
+            "status": "trading" if item.get("state") == 0 else str(item.get("state")),
+            "mark_price": "-",
+            "leverage_max": item.get("maxLeverage"),
+            "contract_type": "perpetual",
+        }
+        for item in contracts
+        if item.get("quoteCoin") == "USDT" and not item.get("isHidden")
+    ], key=lambda row: row["name"] or "")
+
+
+def get_binance_contracts():
+    response = fetch_json(f"{BINANCE_API}/fapi/v1/exchangeInfo")
+    return sorted([
+        {
+            "name": item.get("symbol"),
+            "status": item.get("status"),
+            "mark_price": "-",
+            "leverage_max": "-",
+            "contract_type": item.get("contractType"),
+        }
+        for item in response.get("symbols", [])
+        if item.get("quoteAsset") == "USDT" and item.get("contractType") == "PERPETUAL"
+    ], key=lambda row: row["name"] or "")
+
+
 def get_contracts(exchange):
     if exchange == "gate":
         return get_gate_contracts()
     if exchange == "bitget":
         return get_bitget_contracts()
+    if exchange == "bybit":
+        return get_bybit_contracts()
+    if exchange == "okx":
+        return get_okx_contracts()
+    if exchange == "mexc":
+        return get_mexc_contracts()
+    if exchange == "binance":
+        return get_binance_contracts()
     raise ValueError("unsupported exchange")
 
 
@@ -308,11 +431,177 @@ def get_bitget_contract_detail(name):
     }
 
 
+def get_bybit_contract_detail(name):
+    params = urlencode({"category": "linear", "symbol": name})
+    risk_params = urlencode({"category": "linear", "symbol": name, "limit": 1000})
+    instruments = unwrap_bybit(fetch_json(f"{BYBIT_API}/market/instruments-info?{params}", ttl=0)).get("list", [])
+    tickers = unwrap_bybit(fetch_json(f"{BYBIT_API}/market/tickers?{params}", ttl=0)).get("list", [])
+    tiers = unwrap_bybit(fetch_json(f"{BYBIT_API}/market/risk-limit?{risk_params}", ttl=0)).get("list", [])
+    if not instruments:
+        raise ValueError(f"contract not found: {name}")
+    contract = instruments[0]
+    ticker = tickers[0] if tickers else {}
+    mark_price = as_float(ticker.get("markPrice") or ticker.get("indexPrice"))
+    enriched = [make_notional_tier(
+        item.get("id"), item.get("riskLimitValue"), mark_price, 1,
+        item.get("maxLeverage"), item.get("initialMargin"), item.get("maintenanceMargin")
+    ) for item in tiers]
+    limits = [as_float(item.get("riskLimitValue")) for item in tiers]
+    leverage = contract.get("leverageFilter", {})
+    return {
+        "exchange": "bybit.com", "intro": contract_intro(contract.get("baseCoin")), "updated_at": int(time.time()),
+        "contract": {
+            "name": contract.get("symbol"), "status": contract.get("status"),
+            "leverage_min": leverage.get("minLeverage"), "leverage_max": leverage.get("maxLeverage"),
+            "cross_leverage_default": "-", "maintenance_rate": enriched[0]["maintenance_rate"] if enriched else "-",
+            "risk_limit_base": limits[0] if limits else "-", "risk_limit_max": max(limits) if limits else "-",
+            "quanto_multiplier": 1, "order_price_round": contract.get("priceFilter", {}).get("tickSize"),
+            "mark_price": ticker.get("markPrice"), "index_price": ticker.get("indexPrice"),
+        },
+        "tiers": enriched, "simplified_tiers": simplify_tiers(enriched),
+    }
+
+
+def get_okx_contract_detail(name):
+    instruments = unwrap_okx(fetch_json(f"{OKX_API}/public/instruments?instType=SWAP&instId={quote(name)}", ttl=0))
+    if not instruments:
+        raise ValueError(f"contract not found: {name}")
+    contract = instruments[0]
+    mark_rows = unwrap_okx(fetch_json(f"{OKX_API}/public/mark-price?instType=SWAP&instId={quote(name)}", ttl=0))
+    index_rows = unwrap_okx(fetch_json(f"{OKX_API}/market/index-tickers?instId={quote(contract.get('uly', ''))}", ttl=0))
+    tier_params = urlencode({"instType": "SWAP", "tdMode": "cross", "uly": contract.get("uly", "")})
+    tiers = unwrap_okx(fetch_json(f"{OKX_API}/public/position-tiers?{tier_params}", ttl=0))
+    mark_price = as_float(mark_rows[0].get("markPx") if mark_rows else 0)
+    multiplier = as_float(contract.get("ctVal"), 1) * as_float(contract.get("ctMult"), 1)
+    enriched = []
+    for item in tiers:
+        size = int(as_float(item.get("maxSz")))
+        enriched.append({
+            "tier": int(as_float(item.get("tier"))), "risk_limit_contracts": size,
+            "risk_limit_usdt": approx_usdt_from_size(size, mark_price, multiplier),
+            "leverage_max": format_number(item.get("maxLever"), 4),
+            "initial_rate": format_percent(item.get("imr")), "maintenance_rate": format_percent(item.get("mmr")),
+            "source_risk_limit_usdt": approx_usdt_from_size(size, mark_price, multiplier),
+        })
+    return {
+        "exchange": "okx.com", "intro": contract_intro(contract.get("uly", "").split("-")[0]), "updated_at": int(time.time()),
+        "contract": {
+            "name": contract.get("instId"), "status": contract.get("state"), "leverage_min": 1,
+            "leverage_max": contract.get("lever"), "cross_leverage_default": "-",
+            "maintenance_rate": enriched[0]["maintenance_rate"] if enriched else "-",
+            "risk_limit_base": enriched[0]["risk_limit_contracts"] if enriched else "-",
+            "risk_limit_max": enriched[-1]["risk_limit_contracts"] if enriched else "-",
+            "quanto_multiplier": multiplier, "order_price_round": contract.get("tickSz"),
+            "mark_price": mark_rows[0].get("markPx") if mark_rows else "-",
+            "index_price": index_rows[0].get("idxPx") if index_rows else "-",
+        },
+        "tiers": enriched, "simplified_tiers": simplify_tiers(enriched),
+    }
+
+
+def get_mexc_contract_detail(name):
+    contracts = unwrap_mexc(fetch_json(f"{MEXC_API}/contract/detail", ttl=0)) or []
+    contract = next((item for item in contracts if item.get("symbol") == name), None)
+    if not contract:
+        raise ValueError(f"contract not found: {name}")
+    ticker = unwrap_mexc(fetch_json(f"{MEXC_API}/contract/ticker?symbol={quote(name)}", ttl=0)) or {}
+    mark_price = as_float(ticker.get("fairPrice") or ticker.get("indexPrice"))
+    multiplier = as_float(contract.get("contractSize"), 1)
+    tiers = contract.get("riskLimitCustom") or []
+    if not tiers:
+        level_count = max(1, int(as_float(contract.get("riskLevelLimit"), 1)))
+        base_volume = as_float(contract.get("riskBaseVol"))
+        volume_increment = as_float(contract.get("riskIncrVol"))
+        base_mmr = as_float(contract.get("maintenanceMarginRate"))
+        base_imr = as_float(contract.get("initialMarginRate"))
+        tiers = [
+            {
+                "level": level,
+                "maxVol": base_volume + volume_increment * (level - 1),
+                "mmr": base_mmr + as_float(contract.get("riskIncrMmr")) * (level - 1),
+                "imr": base_imr + as_float(contract.get("riskIncrImr")) * (level - 1),
+                "maxLeverage": 1 / (base_imr + as_float(contract.get("riskIncrImr")) * (level - 1)),
+            }
+            for level in range(1, level_count + 1)
+            if base_imr + as_float(contract.get("riskIncrImr")) * (level - 1) > 0
+        ]
+    enriched = []
+    for item in tiers:
+        size = int(as_float(item.get("maxVol")))
+        enriched.append({
+            "tier": int(as_float(item.get("level"))), "risk_limit_contracts": size,
+            "risk_limit_usdt": approx_usdt_from_size(size, mark_price, multiplier),
+            "leverage_max": format_number(item.get("maxLeverage"), 4),
+            "initial_rate": format_percent(item.get("imr")), "maintenance_rate": format_percent(item.get("mmr")),
+            "source_risk_limit_usdt": approx_usdt_from_size(size, mark_price, multiplier),
+        })
+    return {
+        "exchange": "mexc.com", "intro": contract_intro(contract.get("baseCoin")), "updated_at": int(time.time()),
+        "contract": {
+            "name": contract.get("symbol"), "status": "trading" if contract.get("state") == 0 else contract.get("state"),
+            "leverage_min": contract.get("minLeverage"), "leverage_max": contract.get("maxLeverage"),
+            "cross_leverage_default": "-", "maintenance_rate": format_percent(contract.get("maintenanceMarginRate")),
+            "risk_limit_base": enriched[0]["risk_limit_contracts"] if enriched else contract.get("riskBaseVol"),
+            "risk_limit_max": enriched[-1]["risk_limit_contracts"] if enriched else contract.get("riskBaseVol"),
+            "quanto_multiplier": contract.get("contractSize"), "order_price_round": contract.get("priceUnit"),
+            "mark_price": ticker.get("fairPrice"), "index_price": ticker.get("indexPrice"),
+        },
+        "tiers": enriched, "simplified_tiers": simplify_tiers(enriched),
+    }
+
+
+def unwrap_binance_brackets(response):
+    data = response.get("data", response)
+    if isinstance(data, dict):
+        data = data.get("brackets", data.get("list", []))
+    if isinstance(data, list) and data and "brackets" in data[0]:
+        data = data[0].get("brackets", [])
+    if not isinstance(data, list):
+        raise ValueError("Binance risk tiers unavailable")
+    return data
+
+
+def get_binance_contract_detail(name):
+    exchange_info = fetch_json(f"{BINANCE_API}/fapi/v1/exchangeInfo", ttl=0)
+    contract = next((item for item in exchange_info.get("symbols", []) if item.get("symbol") == name), None)
+    if not contract:
+        raise ValueError(f"contract not found: {name}")
+    price = fetch_json(f"{BINANCE_API}/fapi/v1/premiumIndex?symbol={quote(name)}", ttl=0)
+    bracket_response = fetch_json(f"{BINANCE_WEB_API}/brackets?symbol={quote(name)}", ttl=0)
+    tiers = unwrap_binance_brackets(bracket_response)
+    mark_price = as_float(price.get("markPrice") or price.get("indexPrice"))
+    enriched = [make_notional_tier(
+        item.get("bracket"), item.get("notionalCap"), mark_price, 1,
+        item.get("initialLeverage"), 1 / as_float(item.get("initialLeverage"), 1), item.get("maintMarginRatio")
+    ) for item in tiers]
+    limits = [as_float(item.get("notionalCap")) for item in tiers]
+    return {
+        "exchange": "binance.com", "intro": contract_intro(contract.get("baseAsset")), "updated_at": int(time.time()),
+        "contract": {
+            "name": contract.get("symbol"), "status": contract.get("status"), "leverage_min": 1,
+            "leverage_max": tiers[0].get("initialLeverage") if tiers else "-", "cross_leverage_default": "-",
+            "maintenance_rate": enriched[0]["maintenance_rate"] if enriched else "-",
+            "risk_limit_base": limits[0] if limits else "-", "risk_limit_max": max(limits) if limits else "-",
+            "quanto_multiplier": 1, "order_price_round": price_filter_value(contract, "PRICE_FILTER", "tickSize"),
+            "mark_price": price.get("markPrice"), "index_price": price.get("indexPrice"),
+        },
+        "tiers": enriched, "simplified_tiers": simplify_tiers(enriched),
+    }
+
+
 def get_contract_detail(exchange, name):
     if exchange == "gate":
         return get_gate_contract_detail(name)
     if exchange == "bitget":
         return get_bitget_contract_detail(name)
+    if exchange == "bybit":
+        return get_bybit_contract_detail(name)
+    if exchange == "okx":
+        return get_okx_contract_detail(name)
+    if exchange == "mexc":
+        return get_mexc_contract_detail(name)
+    if exchange == "binance":
+        return get_binance_contract_detail(name)
     raise ValueError("unsupported exchange")
 
 
@@ -340,7 +629,14 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path in ("/", "/index.html"):
                 self.send_html()
             elif parsed.path == "/api/exchanges":
-                self.send_json([{"id": "gate", "name": "gate.io"}, {"id": "bitget", "name": "bitget.com"}])
+                self.send_json([
+                    {"id": "gate", "name": "gate.io"},
+                    {"id": "bitget", "name": "bitget.com"},
+                    {"id": "bybit", "name": "bybit.com"},
+                    {"id": "okx", "name": "okx.com"},
+                    {"id": "mexc", "name": "mexc.com"},
+                    {"id": "binance", "name": "binance.com"},
+                ])
             elif parsed.path == "/api/contracts":
                 exchange = parse_qs(parsed.query).get("exchange", ["gate"])[0].strip().lower()
                 self.send_json(get_contracts(exchange))
